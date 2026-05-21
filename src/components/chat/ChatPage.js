@@ -3,9 +3,20 @@ import Header from '../common/Header';
 import ChatList from './ChatList';
 import ChatRoom from './ChatRoom';
 import UserSearch from './UserSearch';
-import { getUserChats, checkChatExists, createChatIfNotExists, getUserStatus } from '../../services/chatService';
+import { getUserChats, checkChatExists, createChatIfNotExists, getUserStatus, getMessages } from '../../services/chatService';
 import { useWebSocket } from '../../context/WebSocketContext';
+import { getCachedChatTime, setCachedChatTime } from '../../utils/chatTimeStorage';
 import '../../styles/ChatPage.css';
+
+const formatTimeForChat = (timestamp) => {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleDateString();
+};
 
 function ChatPage() {
   const [selectedChat, setSelectedChat] = useState(null);
@@ -35,17 +46,54 @@ function ChatPage() {
   const loadChats = useCallback(async () => {
     try {
       const data = await getUserChats(50, 0);
-      const formattedChats = data.map(chat => ({
-        id: chat.chat_id,
-        name: chat.receiver_nickname,
-        receiverId: chat.receiver_id,
-        lastMessage: chat.last_msg || 'Нет сообщений',
-        time: '',
-        unread: 0,
-        avatar: chat.receiver_nickname?.[0]?.toUpperCase() || '?',
-        online: false,
-        timestamp: new Date().toISOString()
-      }));
+      
+      const formattedChats = data.map(chat => {
+        const cachedTime = getCachedChatTime(chat.chat_id);
+        const timestamp = cachedTime || new Date(0);
+        return {
+          id: chat.chat_id,
+          name: chat.receiver_nickname,
+          receiverId: chat.receiver_id,
+          lastMessage: chat.last_msg || 'Нет сообщений',
+          time: cachedTime ? formatTimeForChat(cachedTime) : '',
+          unread: 0,
+          avatar: chat.receiver_nickname?.[0]?.toUpperCase() || '?',
+          online: false,
+          timestamp: timestamp
+        };
+      });
+
+      setChats(sortChatsByTime(formattedChats));
+
+      const chatsWithoutCache = formattedChats.filter(chat => !getCachedChatTime(chat.id));
+      if (chatsWithoutCache.length > 0) {
+        const promises = chatsWithoutCache.map(async (chat) => {
+          try {
+            const messages = await getMessages(chat.id, 1, 0);
+            let timestamp = new Date(0);
+            if (messages && messages.length > 0 && messages[0].created_at) {
+              timestamp = new Date(messages[0].created_at);
+            }
+            setCachedChatTime(chat.id, timestamp);
+            return { id: chat.id, timestamp, time: formatTimeForChat(timestamp) };
+          } catch (err) {
+            console.error(`Ошибка загрузки времени для чата ${chat.id}:`, err);
+            const zeroTime = new Date(0);
+            return { id: chat.id, timestamp: zeroTime, time: '' };
+          }
+        });
+        const results = await Promise.all(promises);
+        setChats(prev => {
+          const updated = prev.map(chat => {
+            const found = results.find(r => r.id === chat.id);
+            if (found) {
+              return { ...chat, timestamp: found.timestamp, time: found.time };
+            }
+            return chat;
+          });
+          return sortChatsByTime(updated);
+        });
+      }
 
       const statusPromises = formattedChats.map(async (chat) => {
         const online = await getUserStatus(chat.receiverId);
@@ -55,16 +103,12 @@ function ChatPage() {
       const statusMap = {};
       statuses.forEach(s => { if (s) statusMap[s.receiverId] = s.online; });
 
-      const finalChats = formattedChats.map(chat => ({
+      setChats(prev => prev.map(chat => ({
         ...chat,
         online: statusMap[chat.receiverId] ?? false
-      }));
-
-      setChats(sortChatsByTime(finalChats));
-      return finalChats;
+      })));
     } catch (err) {
       console.error('Ошибка загрузки чатов:', err);
-      return [];
     }
   }, [sortChatsByTime]);
 
@@ -72,11 +116,9 @@ function ChatPage() {
     const checkMissingStatuses = async () => {
       const offlineChats = chats.filter(chat => chat.online === false && chat.receiverId);
       if (offlineChats.length === 0) return;
-      console.log('🔍 Проверяем статусы для чатов с offline:', offlineChats.map(c => c.name));
       for (const chat of offlineChats) {
         const status = await getUserStatus(chat.receiverId);
         if (status !== chat.online) {
-          console.log(`🔄 Обновляем статус чата ${chat.name} с ${chat.online} на ${status}`);
           setChats(prev => prev.map(c => 
             c.id === chat.id ? { ...c, online: status } : c
           ));
@@ -95,17 +137,19 @@ function ChatPage() {
 
       if (data.type === 'new_chat') {
         console.log('🆕 Получен new_chat:', data);
+        const now = new Date();
         const tempChat = {
           id: data.chat_id,
           name: data.sender_nickname || 'Новый чат',
           receiverId: data.from,
           lastMessage: data.message,
-          time: 'Только что',
+          time: formatTimeForChat(now),
           unread: 0,
           avatar: (data.sender_nickname?.[0] || '?').toUpperCase(),
           online: false,
-          timestamp: new Date().toISOString()
+          timestamp: now
         };
+        setCachedChatTime(tempChat.id, now);
         setChats(prev => sortChatsByTime([tempChat, ...prev]));
         loadChats();
       } 
@@ -123,15 +167,10 @@ function ChatPage() {
         const senderId = Number(data.user_id);
         if (senderId === currentUserId) return;
 
-        console.log(`🔔 Получен статус: user_id=${data.user_id} (число ${senderId}), online=${data.online}`);
-        console.log(`📋 Текущие чаты:`, chats.map(c => ({ id: c.id, receiverId: c.receiverId, name: c.name })));
-        
         const foundChat = chats.find(chat => chat.receiverId === senderId);
-        console.log(`🔍 Поиск чата с receiverId=${senderId}: ${foundChat ? 'найден' : 'не найден'}`);
 
         if (isChatsLoaded.current) {
           if (foundChat) {
-            console.log(`✅ Обновляю статус чата ${foundChat.name} -> ${data.online ? 'ONLINE' : 'OFFLINE'}`);
             setChats(prev =>
               prev.map(chat =>
                 chat.receiverId === senderId ? { ...chat, online: data.online } : chat
@@ -141,11 +180,9 @@ function ChatPage() {
               prev && prev.receiverId === senderId ? { ...prev, online: data.online } : prev
             );
           } else {
-            console.log(`⚠️ Чат с receiverId=${senderId} не найден, сохраняю в pendingStatuses`);
             pendingStatuses.current[senderId] = data.online;
           }
         } else {
-          console.log(`📦 Статус сохранён в pendingStatuses (чаты ещё не загружены)`);
           pendingStatuses.current[senderId] = data.online;
         }
       }
@@ -157,7 +194,6 @@ function ChatPage() {
     if (chats.length > 0 && !isChatsLoaded.current) {
       isChatsLoaded.current = true;
       if (Object.keys(pendingStatuses.current).length) {
-        console.log('🔄 Применяю отложенные статусы:', pendingStatuses.current);
         setChats(prev =>
           prev.map(chat => ({
             ...chat,
@@ -185,11 +221,11 @@ function ChatPage() {
   const updateLastMessage = (chatId, message, senderId) => {
     try {
       const now = new Date();
-      const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const timestamp = now.toISOString();
+      const timeStr = formatTimeForChat(now);
+      setCachedChatTime(chatId, now);
       setChats(prev => {
         const updated = prev.map(chat =>
-          chat.id === chatId ? { ...chat, lastMessage: message, time: timeStr, timestamp } : chat
+          chat.id === chatId ? { ...chat, lastMessage: message, time: timeStr, timestamp: now } : chat
         );
         return sortChatsByTime(updated);
       });
@@ -202,6 +238,9 @@ function ChatPage() {
     if (userOrChat.id && userOrChat.receiverId && userOrChat.isFromProfile) {
       setChats(prev => {
         const exists = prev.find(chat => chat.id === userOrChat.id);
+        if (!exists && userOrChat.timestamp) {
+          setCachedChatTime(userOrChat.id, userOrChat.timestamp);
+        }
         return exists ? prev : sortChatsByTime([userOrChat, ...prev]);
       });
       setSelectedChat(userOrChat);
@@ -242,12 +281,13 @@ function ChatPage() {
           name: userName,
           receiverId: userId,
           lastMessage: firstMessage,
-          time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          time: formatTimeForChat(now),
           unread: 0,
           avatar: (userName[0] || '?').toUpperCase(),
           online: onlineStatus,
-          timestamp: now.toISOString()
+          timestamp: now
         };
+        setCachedChatTime(newChat.id, now);
         setChats(prev => sortChatsByTime([newChat, ...prev]));
         setSelectedChat(newChat);
         if (isMobileLayout) setShowMobileChat(true);
@@ -266,13 +306,14 @@ function ChatPage() {
         name: userName,
         receiverId: userId,
         lastMessage: 'Новый чат',
-        time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        time: formatTimeForChat(now),
         unread: 0,
         avatar: (userName[0] || '?').toUpperCase(),
         online: onlineStatus,
         isTemporary: true,
-        timestamp: now.toISOString()
+        timestamp: now
       };
+      setCachedChatTime(newChat.id, now);
       setChats(prev => sortChatsByTime([newChat, ...prev]));
       setSelectedChat(newChat);
       if (isMobileLayout) setShowMobileChat(true);
