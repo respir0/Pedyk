@@ -38,15 +38,10 @@ export const WebSocketProvider = ({ children }) => {
   }, []);
 
   const connect = useCallback(() => {
-    const localToken = localStorage.getItem('token');
-    if (localToken && !document.cookie.includes('access_token')) {
-      document.cookie = `access_token=${localToken}; path=/`;
-    }
-
     let token = getCookie('access_token') || localStorage.getItem('token');
     if (!token) {
       console.log('WebSocket: нет токена, подключение отложено');
-      return;
+      return false;
     }
     token = token.trim();
     if (token.includes(').token=')) {
@@ -55,15 +50,15 @@ export const WebSocketProvider = ({ children }) => {
       document.cookie = `access_token=${token}; path=/`;
     }
 
-    const host = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
-    const wsUrl = `ws://${host}/api/v1/chats/ws`;
-    console.log('WebSocket: попытка подключения к', wsUrl);
-
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       isIntentionalCloseRef.current = true;
       wsRef.current.close();
       isIntentionalCloseRef.current = false;
     }
+
+    const host = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
+    const wsUrl = `ws://${host}/api/v1/chats/ws`;
+    console.log('WebSocket: попытка подключения к', wsUrl);
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -129,7 +124,45 @@ export const WebSocketProvider = ({ children }) => {
         connect();
       }, delay);
     };
+    return true;
   }, [flushQueue]);
+
+  useEffect(() => {
+    const tryConnect = () => {
+      const token = getCookie('access_token') || localStorage.getItem('token');
+      if (token && (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN)) {
+        connect();
+      }
+    };
+
+    tryConnect();
+
+    const handleStorageChange = (e) => {
+      if (e.key === 'token') {
+        tryConnect();
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
+    const interval = setInterval(() => {
+      const token = getCookie('access_token') || localStorage.getItem('token');
+      if (token && (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN)) {
+        connect();
+      }
+    }, 5000);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      clearInterval(interval);
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        isIntentionalCloseRef.current = true;
+        wsRef.current.close();
+      }
+    };
+  }, [connect]);
 
   const subscribe = (key, callback) => {
     listenersRef.current.set(key, callback);
@@ -153,7 +186,7 @@ export const WebSocketProvider = ({ children }) => {
     } else {
       console.log('WebSocket: сообщение добавлено в очередь', data);
       messageQueueRef.current.push(data);
-      return false;
+      return true;
     }
   };
 
@@ -165,19 +198,6 @@ export const WebSocketProvider = ({ children }) => {
     }
     setIsConnected(false);
   };
-
-  useEffect(() => {
-    connect();
-    return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        isIntentionalCloseRef.current = true;
-        wsRef.current.close();
-      }
-    };
-  }, [connect]);
 
   return (
     <WebSocketContext.Provider value={{ isConnected, error, sendMessage, subscribe, disconnect }}>

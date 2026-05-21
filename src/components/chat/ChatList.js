@@ -3,7 +3,7 @@ import CreateChatModal from './CreateChatModal';
 import Avatar from '../common/Avatar';
 import { getUserChats } from '../../services/chatService';
 
-function ChatList({ onSelectChat, selectedChat, chats, setChats }) {
+function ChatList({ onSelectChat, selectedChat, chats, setChats, hasMoreChats, isLoadingMoreChats, onLoadMoreChats }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -88,28 +88,41 @@ function ChatList({ onSelectChat, selectedChat, chats, setChats }) {
         
         <div className="chat-items">
           {filteredChats.length > 0 ? (
-            filteredChats.map(chat => (
-              <div 
-                key={chat.id}
-                className={`chat-item ${selectedChat?.id === chat.id ? 'active' : ''}`}
-                onClick={() => onSelectChat(chat)}
-              >
-                <div className="chat-avatar" style={{ position: 'relative' }}>
-                  <Avatar name={chat.name} size={50} />
-                  {chat.online && <span className="online-indicator"></span>}
-                </div>
-                <div className="chat-info">
-                  <div className="chat-name">
-                    <span>{chat.name}</span>
-                    <span className="chat-time">{chat.time}</span>
+            <>
+              {filteredChats.map(chat => (
+                <div 
+                  key={chat.id}
+                  className={`chat-item ${selectedChat?.id === chat.id ? 'active' : ''}`}
+                  onClick={() => onSelectChat(chat)}
+                >
+                  <div className="chat-avatar" style={{ position: 'relative' }}>
+                    <Avatar name={chat.name} size={50} />
+                    {chat.online && <span className="online-indicator"></span>}
                   </div>
-                  <div className="chat-last-message">
-                    <span>{chat.lastMessage || 'Нет сообщений'}</span>
-                    {chat.unread > 0 && <span className="unread-badge">{chat.unread}</span>}
+                  <div className="chat-info">
+                    <div className="chat-name">
+                      <span>{chat.name}</span>
+                      <span className="chat-time">{chat.time}</span>
+                    </div>
+                    <div className="chat-last-message">
+                      <span>{chat.lastMessage || 'Нет сообщений'}</span>
+                      {chat.unread > 0 && <span className="unread-badge">{chat.unread}</span>}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
+              ))}
+              {hasMoreChats && (
+                <div className="load-more-chats">
+                  <button 
+                    className="load-more-btn" 
+                    onClick={onLoadMoreChats}
+                    disabled={isLoadingMoreChats}
+                  >
+                    {isLoadingMoreChats ? 'Загрузка...' : 'Загрузить ещё'}
+                  </button>
+                </div>
+              )}
+            </>
           ) : (
             <div className="no-chats">
               <p>Нет чатов</p>

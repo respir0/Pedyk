@@ -779,3 +779,24 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.load-more-chats {
+  text-align: center;
+  padding: 15px;
+}
+.load-more-btn {
+  background: var(--gradient-primary);
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 25px;
+  cursor: pointer;
+  transition: opacity 0.3s;
+}
+.load-more-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.load-more-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -8,6 +8,8 @@ import { useWebSocket } from '../../context/WebSocketContext';
 import { getCachedChatTime, setCachedChatTime } from '../../utils/chatTimeStorage';
 import '../../styles/ChatPage.css';
 
+const CHAT_LIMIT = 20;
+
 const formatTimeForChat = (timestamp) => {
   if (!timestamp) return '';
   const date = new Date(timestamp);
@@ -32,6 +34,10 @@ function ChatPage() {
     return false;
   });
 
+  const [chatsOffset, setChatsOffset] = useState(0);
+  const [hasMoreChats, setHasMoreChats] = useState(true);
+  const [isLoadingMoreChats, setIsLoadingMoreChats] = useState(false);
+
   const pendingStatuses = useRef({});
   const isChatsLoaded = useRef(false);
 
@@ -43,10 +49,14 @@ function ChatPage() {
     });
   }, []);
 
-  const loadChats = useCallback(async () => {
+  const loadInitialChats = useCallback(async () => {
+    setIsLoading(true);
+    setHasMoreChats(true);
+    setChatsOffset(0);
     try {
-      const data = await getUserChats(50, 0);
-      
+      const data = await getUserChats(CHAT_LIMIT, 0);
+      setHasMoreChats(data.length === CHAT_LIMIT);
+
       const formattedChats = data.map(chat => {
         const cachedTime = getCachedChatTime(chat.chat_id);
         const timestamp = cachedTime || new Date(0);
@@ -64,6 +74,7 @@ function ChatPage() {
       });
 
       setChats(sortChatsByTime(formattedChats));
+      setChatsOffset(CHAT_LIMIT);
 
       const chatsWithoutCache = formattedChats.filter(chat => !getCachedChatTime(chat.id));
       if (chatsWithoutCache.length > 0) {
@@ -109,8 +120,80 @@ function ChatPage() {
       })));
     } catch (err) {
       console.error('Ошибка загрузки чатов:', err);
+    } finally {
+      setIsLoading(false);
     }
   }, [sortChatsByTime]);
+
+  const loadMoreChats = useCallback(async () => {
+    if (!hasMoreChats || isLoadingMoreChats) return;
+    setIsLoadingMoreChats(true);
+    try {
+      const data = await getUserChats(CHAT_LIMIT, chatsOffset);
+      if (data.length < CHAT_LIMIT) setHasMoreChats(false);
+
+      const newChats = data.map(chat => {
+        const cachedTime = getCachedChatTime(chat.chat_id);
+        const timestamp = cachedTime || new Date(0);
+        return {
+          id: chat.chat_id,
+          name: chat.receiver_nickname,
+          receiverId: chat.receiver_id,
+          lastMessage: chat.last_msg || 'Нет сообщений',
+          time: cachedTime ? formatTimeForChat(cachedTime) : '',
+          unread: 0,
+          avatar: chat.receiver_nickname?.[0]?.toUpperCase() || '?',
+          online: false,
+          timestamp: timestamp
+        };
+      });
+
+      const chatsWithoutCache = newChats.filter(chat => !getCachedChatTime(chat.id));
+      if (chatsWithoutCache.length > 0) {
+        const promises = chatsWithoutCache.map(async (chat) => {
+          try {
+            const messages = await getMessages(chat.id, 1, 0);
+            let timestamp = new Date(0);
+            if (messages && messages.length > 0 && messages[0].created_at) {
+              timestamp = new Date(messages[0].created_at);
+            }
+            setCachedChatTime(chat.id, timestamp);
+            return { id: chat.id, timestamp, time: formatTimeForChat(timestamp) };
+          } catch (err) {
+            console.error(`Ошибка загрузки времени для чата ${chat.id}:`, err);
+            const zeroTime = new Date(0);
+            return { id: chat.id, timestamp: zeroTime, time: '' };
+          }
+        });
+        const results = await Promise.all(promises);
+        results.forEach(res => {
+          const idx = newChats.findIndex(c => c.id === res.id);
+          if (idx !== -1) {
+            newChats[idx].timestamp = res.timestamp;
+            newChats[idx].time = res.time;
+          }
+        });
+      }
+
+      const statusPromises = newChats.map(async (chat) => {
+        const online = await getUserStatus(chat.receiverId);
+        return { receiverId: chat.receiverId, online };
+      });
+      const statuses = await Promise.all(statusPromises);
+      const statusMap = {};
+      statuses.forEach(s => { if (s) statusMap[s.receiverId] = s.online; });
+      newChats.forEach(chat => {
+        chat.online = statusMap[chat.receiverId] ?? false;
+      });
+
+      setChats(prev => sortChatsByTime([...prev, ...newChats]));
+      setChatsOffset(prev => prev + CHAT_LIMIT);
+    } catch (err) {
+      console.error('Ошибка подгрузки чатов:', err);
+    } finally {
+      setIsLoadingMoreChats(false);
+    }
+  }, [chatsOffset, hasMoreChats, isLoadingMoreChats, sortChatsByTime]);
 
   useEffect(() => {
     const checkMissingStatuses = async () => {
@@ -151,7 +234,7 @@ function ChatPage() {
         };
         setCachedChatTime(tempChat.id, now);
         setChats(prev => sortChatsByTime([tempChat, ...prev]));
-        loadChats();
+        loadInitialChats();
       } 
       else if (data.type === 'new_message') {
         setChats(prevChats =>
@@ -188,7 +271,7 @@ function ChatPage() {
       }
     });
     return unsubscribe;
-  }, [subscribe, chats, sortChatsByTime, loadChats]);
+  }, [subscribe, chats, sortChatsByTime, loadInitialChats]);
 
   useEffect(() => {
     if (chats.length > 0 && !isChatsLoaded.current) {
@@ -254,7 +337,7 @@ function ChatPage() {
       try {
         const chatId = await checkChatExists(userId);
         if (chatId) {
-          await loadChats();
+          await loadInitialChats();
           existingChat = chats.find(chat => chat.receiverId === userId);
         }
       } catch (err) { console.error(err); }
@@ -321,8 +404,8 @@ function ChatPage() {
   };
 
   useEffect(() => {
-    loadChats();
-  }, [loadChats]);
+    loadInitialChats();
+  }, [loadInitialChats]);
 
   return (
     <div className={`chat-page ${isMobileLayout ? 'mobile-layout' : ''}`}>
@@ -334,7 +417,10 @@ function ChatPage() {
             onSelectChat={handleSelectChat} 
             selectedChat={selectedChat} 
             chats={chats} 
-            setChats={setChats} 
+            setChats={setChats}
+            hasMoreChats={hasMoreChats}
+            isLoadingMoreChats={isLoadingMoreChats}
+            onLoadMoreChats={loadMoreChats}
           />
         </div>
         
