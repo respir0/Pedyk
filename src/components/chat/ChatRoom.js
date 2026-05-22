@@ -25,13 +25,18 @@ function ChatRoom({ chat, onBack, onNewMessage }) {
   };
 
   const markMessagesAsRead = useCallback(async () => {
-    if (!chat?.id) return;
+    if (!chat?.id || !chat?.receiverId) return;
     try {
-      await api.patch(`/chats/set_all_messages_is_read/${chat.id}`);
+      await api.patch('/chats/set_all_messages_is_read', null, {
+        params: {
+          chat_id: chat.id,
+          receiver_id: chat.receiverId
+        }
+      });
     } catch (err) {
       console.error('Ошибка отметки прочитанных:', err);
     }
-  }, [chat?.id]);
+  }, [chat?.id, chat?.receiverId]);
 
   const loadMessages = useCallback(async () => {
     setIsLoading(true);
@@ -93,8 +98,8 @@ function ChatRoom({ chat, onBack, onNewMessage }) {
         scrollToBottom();
       }
       
-      if (data.type === 'messages_read' && data.chat_id === chat.id && data.reader_id !== currentUserId) {
-        setMessages(prev => prev.map(msg => 
+      if (data.type === 'messages_is_read' && data.chat_id === chat.id) {
+        setMessages(prev => prev.map(msg =>
           msg.sender_id === currentUserId ? { ...msg, is_read: true } : msg
         ));
       }

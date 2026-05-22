@@ -3,9 +3,8 @@ import Header from '../common/Header';
 import ChatList from './ChatList';
 import ChatRoom from './ChatRoom';
 import UserSearch from './UserSearch';
-import { getUserChats, checkChatExists, createChatIfNotExists, getUserStatus, getMessages } from '../../services/chatService';
+import { getUserChats, checkChatExists, createChatIfNotExists, getUserStatus } from '../../services/chatService';
 import { useWebSocket } from '../../context/WebSocketContext';
-import { getCachedChatTime, setCachedChatTime } from '../../utils/chatTimeStorage';
 import '../../styles/ChatPage.css';
 
 const CHAT_LIMIT = 20;
@@ -49,62 +48,32 @@ function ChatPage() {
     });
   }, []);
 
-  const loadInitialChats = useCallback(async () => {
-    setIsLoading(true);
-    setHasMoreChats(true);
-    setChatsOffset(0);
+  const loadChats = useCallback(async (offset = 0, isInitial = true) => {
+    if (isInitial) {
+      setIsLoading(true);
+      setHasMoreChats(true);
+      setChatsOffset(0);
+    } else {
+      setIsLoadingMoreChats(true);
+    }
     try {
-      const data = await getUserChats(CHAT_LIMIT, 0);
-      setHasMoreChats(data.length === CHAT_LIMIT);
+      const data = await getUserChats(CHAT_LIMIT, offset);
+      if (data.length < CHAT_LIMIT) setHasMoreChats(false);
 
       const formattedChats = data.map(chat => {
-        const cachedTime = getCachedChatTime(chat.chat_id);
-        const timestamp = cachedTime || new Date(0);
+        const timestamp = chat.last_msg_timestamp ? new Date(chat.last_msg_timestamp) : new Date(0);
         return {
           id: chat.chat_id,
           name: chat.receiver_nickname,
           receiverId: chat.receiver_id,
           lastMessage: chat.last_msg || 'Нет сообщений',
-          time: cachedTime ? formatTimeForChat(cachedTime) : '',
+          time: formatTimeForChat(timestamp),
           unread: 0,
           avatar: chat.receiver_nickname?.[0]?.toUpperCase() || '?',
           online: false,
           timestamp: timestamp
         };
       });
-
-      setChats(sortChatsByTime(formattedChats));
-      setChatsOffset(CHAT_LIMIT);
-
-      const chatsWithoutCache = formattedChats.filter(chat => !getCachedChatTime(chat.id));
-      if (chatsWithoutCache.length > 0) {
-        const promises = chatsWithoutCache.map(async (chat) => {
-          try {
-            const messages = await getMessages(chat.id, 1, 0);
-            let timestamp = new Date(0);
-            if (messages && messages.length > 0 && messages[0].created_at) {
-              timestamp = new Date(messages[0].created_at);
-            }
-            setCachedChatTime(chat.id, timestamp);
-            return { id: chat.id, timestamp, time: formatTimeForChat(timestamp) };
-          } catch (err) {
-            console.error(`Ошибка загрузки времени для чата ${chat.id}:`, err);
-            const zeroTime = new Date(0);
-            return { id: chat.id, timestamp: zeroTime, time: '' };
-          }
-        });
-        const results = await Promise.all(promises);
-        setChats(prev => {
-          const updated = prev.map(chat => {
-            const found = results.find(r => r.id === chat.id);
-            if (found) {
-              return { ...chat, timestamp: found.timestamp, time: found.time };
-            }
-            return chat;
-          });
-          return sortChatsByTime(updated);
-        });
-      }
 
       const statusPromises = formattedChats.map(async (chat) => {
         const online = await getUserStatus(chat.receiverId);
@@ -113,87 +82,33 @@ function ChatPage() {
       const statuses = await Promise.all(statusPromises);
       const statusMap = {};
       statuses.forEach(s => { if (s) statusMap[s.receiverId] = s.online; });
-
-      setChats(prev => prev.map(chat => ({
-        ...chat,
-        online: statusMap[chat.receiverId] ?? false
-      })));
-    } catch (err) {
-      console.error('Ошибка загрузки чатов:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [sortChatsByTime]);
-
-  const loadMoreChats = useCallback(async () => {
-    if (!hasMoreChats || isLoadingMoreChats) return;
-    setIsLoadingMoreChats(true);
-    try {
-      const data = await getUserChats(CHAT_LIMIT, chatsOffset);
-      if (data.length < CHAT_LIMIT) setHasMoreChats(false);
-
-      const newChats = data.map(chat => {
-        const cachedTime = getCachedChatTime(chat.chat_id);
-        const timestamp = cachedTime || new Date(0);
-        return {
-          id: chat.chat_id,
-          name: chat.receiver_nickname,
-          receiverId: chat.receiver_id,
-          lastMessage: chat.last_msg || 'Нет сообщений',
-          time: cachedTime ? formatTimeForChat(cachedTime) : '',
-          unread: 0,
-          avatar: chat.receiver_nickname?.[0]?.toUpperCase() || '?',
-          online: false,
-          timestamp: timestamp
-        };
-      });
-
-      const chatsWithoutCache = newChats.filter(chat => !getCachedChatTime(chat.id));
-      if (chatsWithoutCache.length > 0) {
-        const promises = chatsWithoutCache.map(async (chat) => {
-          try {
-            const messages = await getMessages(chat.id, 1, 0);
-            let timestamp = new Date(0);
-            if (messages && messages.length > 0 && messages[0].created_at) {
-              timestamp = new Date(messages[0].created_at);
-            }
-            setCachedChatTime(chat.id, timestamp);
-            return { id: chat.id, timestamp, time: formatTimeForChat(timestamp) };
-          } catch (err) {
-            console.error(`Ошибка загрузки времени для чата ${chat.id}:`, err);
-            const zeroTime = new Date(0);
-            return { id: chat.id, timestamp: zeroTime, time: '' };
-          }
-        });
-        const results = await Promise.all(promises);
-        results.forEach(res => {
-          const idx = newChats.findIndex(c => c.id === res.id);
-          if (idx !== -1) {
-            newChats[idx].timestamp = res.timestamp;
-            newChats[idx].time = res.time;
-          }
-        });
-      }
-
-      const statusPromises = newChats.map(async (chat) => {
-        const online = await getUserStatus(chat.receiverId);
-        return { receiverId: chat.receiverId, online };
-      });
-      const statuses = await Promise.all(statusPromises);
-      const statusMap = {};
-      statuses.forEach(s => { if (s) statusMap[s.receiverId] = s.online; });
-      newChats.forEach(chat => {
+      formattedChats.forEach(chat => {
         chat.online = statusMap[chat.receiverId] ?? false;
       });
 
-      setChats(prev => sortChatsByTime([...prev, ...newChats]));
-      setChatsOffset(prev => prev + CHAT_LIMIT);
+      if (isInitial) {
+        setChats(sortChatsByTime(formattedChats));
+        setChatsOffset(CHAT_LIMIT);
+      } else {
+        setChats(prev => sortChatsByTime([...prev, ...formattedChats]));
+        setChatsOffset(prev => prev + CHAT_LIMIT);
+      }
     } catch (err) {
-      console.error('Ошибка подгрузки чатов:', err);
+      console.error('Ошибка загрузки чатов:', err);
     } finally {
-      setIsLoadingMoreChats(false);
+      if (isInitial) setIsLoading(false);
+      else setIsLoadingMoreChats(false);
     }
-  }, [chatsOffset, hasMoreChats, isLoadingMoreChats, sortChatsByTime]);
+  }, [sortChatsByTime]);
+
+  const loadMoreChats = useCallback(() => {
+    if (!hasMoreChats || isLoadingMoreChats) return;
+    loadChats(chatsOffset, false);
+  }, [chatsOffset, hasMoreChats, isLoadingMoreChats, loadChats]);
+
+  useEffect(() => {
+    loadChats(0, true);
+  }, [loadChats]);
 
   useEffect(() => {
     const checkMissingStatuses = async () => {
@@ -219,7 +134,7 @@ function ChatPage() {
       if (data.type === 'ping') return;
 
       if (data.type === 'new_chat') {
-        console.log('🆕 Получен new_chat:', data);
+        console.log('Получен new_chat:', data);
         const now = new Date();
         const tempChat = {
           id: data.chat_id,
@@ -232,15 +147,13 @@ function ChatPage() {
           online: false,
           timestamp: now
         };
-        setCachedChatTime(tempChat.id, now);
         setChats(prev => sortChatsByTime([tempChat, ...prev]));
-        loadInitialChats();
       } 
       else if (data.type === 'new_message') {
         setChats(prevChats =>
           prevChats.map(chat =>
             chat.id === data.chat_id
-              ? { ...chat, lastMessage: data.message, time: 'Только что' }
+              ? { ...chat, lastMessage: data.message, time: 'Только что', timestamp: new Date() }
               : chat
           )
         );
@@ -271,7 +184,7 @@ function ChatPage() {
       }
     });
     return unsubscribe;
-  }, [subscribe, chats, sortChatsByTime, loadInitialChats]);
+  }, [subscribe, chats, sortChatsByTime]);
 
   useEffect(() => {
     if (chats.length > 0 && !isChatsLoaded.current) {
@@ -290,44 +203,32 @@ function ChatPage() {
 
   const handleSelectChat = (chat) => {
     setSelectedChat(chat);
-    if (isMobileLayout) {
-      setShowMobileChat(true);
-    }
+    if (isMobileLayout) setShowMobileChat(true);
   };
 
   const handleBackToList = () => {
-    if (isMobileLayout) {
-      setShowMobileChat(false);
-    }
+    if (isMobileLayout) setShowMobileChat(false);
   };
 
-  const updateLastMessage = (chatId, message, senderId) => {
-    try {
-      const now = new Date();
-      const timeStr = formatTimeForChat(now);
-      setCachedChatTime(chatId, now);
-      setChats(prev => {
-        const updated = prev.map(chat =>
-          chat.id === chatId ? { ...chat, lastMessage: message, time: timeStr, timestamp: now } : chat
-        );
-        return sortChatsByTime(updated);
-      });
-    } catch (err) {
-      console.error('Ошибка обновления последнего сообщения:', err);
-    }
-  };
+  const updateLastMessage = useCallback((chatId, message, senderId) => {
+    const now = new Date();
+    const timeStr = formatTimeForChat(now);
+    setChats(prev => {
+      const updated = prev.map(chat =>
+        chat.id === chatId ? { ...chat, lastMessage: message, time: timeStr, timestamp: now } : chat
+      );
+      return sortChatsByTime(updated);
+    });
+  }, [sortChatsByTime]);
 
-  const handleSelectUser = async (userOrChat, firstMessage) => {
+  const handleSelectUser = useCallback(async (userOrChat, firstMessage) => {
     if (userOrChat.id && userOrChat.receiverId && userOrChat.isFromProfile) {
       setChats(prev => {
         const exists = prev.find(chat => chat.id === userOrChat.id);
-        if (!exists && userOrChat.timestamp) {
-          setCachedChatTime(userOrChat.id, userOrChat.timestamp);
-        }
         return exists ? prev : sortChatsByTime([userOrChat, ...prev]);
       });
       setSelectedChat(userOrChat);
-      if (isMobileLayout && window.innerWidth <= 768) setShowMobileChat(true);
+      if (isMobileLayout) setShowMobileChat(true);
       return;
     }
     const userId = Number(userOrChat.receiverId || userOrChat.id);
@@ -337,7 +238,7 @@ function ChatPage() {
       try {
         const chatId = await checkChatExists(userId);
         if (chatId) {
-          await loadInitialChats();
+          await loadChats(0, true);
           existingChat = chats.find(chat => chat.receiverId === userId);
         }
       } catch (err) { console.error(err); }
@@ -370,7 +271,6 @@ function ChatPage() {
           online: onlineStatus,
           timestamp: now
         };
-        setCachedChatTime(newChat.id, now);
         setChats(prev => sortChatsByTime([newChat, ...prev]));
         setSelectedChat(newChat);
         if (isMobileLayout) setShowMobileChat(true);
@@ -396,16 +296,11 @@ function ChatPage() {
         isTemporary: true,
         timestamp: now
       };
-      setCachedChatTime(newChat.id, now);
       setChats(prev => sortChatsByTime([newChat, ...prev]));
       setSelectedChat(newChat);
       if (isMobileLayout) setShowMobileChat(true);
     }
-  };
-
-  useEffect(() => {
-    loadInitialChats();
-  }, [loadInitialChats]);
+  }, [chats, isMobileLayout, loadChats, sortChatsByTime]);
 
   return (
     <div className={`chat-page ${isMobileLayout ? 'mobile-layout' : ''}`}>
