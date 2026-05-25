@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
-import { getCookie } from '../utils/cookie';
+import { getCookie, deleteCookie } from '../utils/cookie';
 
 const WebSocketContext = createContext(null);
 
@@ -20,6 +20,22 @@ export const WebSocketProvider = ({ children }) => {
   const reconnectAttemptsRef = useRef(0);
   const messageQueueRef = useRef([]);
   const isIntentionalCloseRef = useRef(false);
+
+  const logoutAndRedirect = useCallback(() => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user_login');
+    localStorage.removeItem('nickname');
+    localStorage.removeItem('user_id');
+    localStorage.removeItem('about');
+    deleteCookie('access_token');
+    
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      isIntentionalCloseRef.current = true;
+      wsRef.current.close();
+    }
+    
+    window.location.href = '/login';
+  }, []);
 
   const flushQueue = useCallback(() => {
     if (messageQueueRef.current.length === 0) return;
@@ -97,6 +113,13 @@ export const WebSocketProvider = ({ children }) => {
       console.log(`WebSocket: соединение закрыто, код: ${event.code}`);
       setIsConnected(false);
       wsRef.current = null;
+
+      if (event.code === 1016) {
+        console.log('WebSocket: пользователь забанен, выполняем выход');
+        logoutAndRedirect();
+        return;
+      }
+
       if (event.code === 1000 || event.code === 1001) {
         console.log('WebSocket: нормальное закрытие, переподключение не требуется');
         return;
@@ -105,6 +128,13 @@ export const WebSocketProvider = ({ children }) => {
         console.log('WebSocket: преднамеренное закрытие, переподключение не требуется');
         return;
       }
+
+      const tokenAfterClose = getCookie('access_token') || localStorage.getItem('token');
+      if (!tokenAfterClose) {
+        console.log('WebSocket: токен отсутствует, переподключение не требуется');
+        return;
+      }
+
       if (!navigator.onLine) {
         console.log('WebSocket: нет интернета, ждём восстановления...');
         const waitForOnline = () => {
@@ -125,7 +155,7 @@ export const WebSocketProvider = ({ children }) => {
       }, delay);
     };
     return true;
-  }, [flushQueue]);
+  }, [flushQueue, logoutAndRedirect]);
 
   useEffect(() => {
     const tryConnect = () => {
